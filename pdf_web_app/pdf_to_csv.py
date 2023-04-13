@@ -5,7 +5,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from processing.regex_functions import *
 from processing.get_data import *
 
-
+import database as db
 
 # FIRST PROCESING OF THE DATA
 def extract_info_cluster1(data_dict):
