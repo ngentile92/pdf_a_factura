@@ -36,7 +36,133 @@ def find_best_match(target, ocr_texts):
 
     return best_match if best_score > 0.6 else None  # Umbral reducido para más coincidencias
 
-# 📦 Función para buscar campos y bounding boxes
+# 📦 Función específica para procesar valores numéricos como "$670.000,00" con logs detallados
+def process_numeric_field_repeated(ocr_data, target_value):
+    components = re.findall(r"[\d.,$]+", target_value)
+    print(f"🔎 Buscando componentes del número: {components}")
+
+    word_boxes = []
+    found_boxes = []
+
+    for page in ocr_data.pages:
+        for block in page.blocks:
+            for paragraph in block.paragraphs:
+                for word in paragraph.words:
+                    word_text = "".join([symbol.text for symbol in word.symbols])
+                    bounding_box = word.bounding_box
+                    x_min = min(vertex.x for vertex in bounding_box.vertices)
+                    y_min = min(vertex.y for vertex in bounding_box.vertices)
+                    x_max = max(vertex.x for vertex in bounding_box.vertices)
+                    y_max = max(vertex.y for vertex in bounding_box.vertices)
+
+                    print(f"📝 Palabra detectada: '{word_text}' con bounding box: [{x_min}, {y_min}, {x_max}, {y_max}]")
+
+                    for component in components:
+                        if component in word_text:
+                            found_boxes.append([x_min, y_min, x_max, y_max])
+                            print(f"✅ Componente encontrado: {component} en '{word_text}'")
+
+    if found_boxes:
+        x_min = min(box[0] for box in found_boxes)
+        y_min = min(box[1] for box in found_boxes)
+        x_max = max(box[2] for box in found_boxes)
+        y_max = max(box[3] for box in found_boxes)
+        combined_box = [x_min, y_min, x_max, y_max]
+        print(f"✅ Bounding box combinada para número repetido: {combined_box}")
+        return combined_box
+
+    print(f"⚠️ No se encontraron bounding boxes para los componentes de: {target_value}")
+    return []
+
+# 📦 Función para procesar campos específicos como frases completas
+def process_specific_fields(extracted_text, ocr_data, label, value):
+    ocr_texts = extracted_text.split()
+    matches = find_phrase_in_ocr(ocr_texts, value)
+
+    word_boxes = []
+    if matches:
+        for match in matches:
+            for page in ocr_data.pages:
+                for block in page.blocks:
+                    for paragraph in block.paragraphs:
+                        for word in paragraph.words:
+                            word_text = "".join([symbol.text for symbol in word.symbols])
+                            if normalize_text(word_text) in normalize_text(match):
+                                x_min = min(vertex.x for vertex in word.bounding_box.vertices)
+                                y_min = min(vertex.y for vertex in word.bounding_box.vertices)
+                                x_max = max(vertex.x for vertex in word.bounding_box.vertices)
+                                y_max = max(vertex.y for vertex in word.bounding_box.vertices)
+                                word_boxes.append([x_min, y_min, x_max, y_max])
+
+    if word_boxes:
+        x_min = min(box[0] for box in word_boxes)
+        y_min = min(box[1] for box in word_boxes)
+        x_max = max(box[2] for box in word_boxes)
+        y_max = max(box[3] for box in word_boxes)
+        return [x_min, y_min, x_max, y_max]
+
+    return []
+# 📦 Función para procesar campos específicos como frases completas
+def find_phrase_in_ocr(ocr_texts, phrase):
+    words = phrase.split()
+    matches = []
+
+    for i in range(len(ocr_texts) - len(words) + 1):
+        if all(normalize_text(word) in normalize_text(ocr_text) for word, ocr_text in zip(words, ocr_texts[i:])):
+            matches.append(" ".join(ocr_texts[i:i + len(words)]))
+
+    return matches
+# 📦 Función principal para procesar una factura
+def process_invoice(image_path, labels):
+    with open(image_path, "rb") as image_file:
+        content = image_file.read()
+
+    image = vision.Image(content=content)
+    response = client.text_detection(image=image)
+    ocr_data = response.full_text_annotation
+    extracted_text = ocr_data.text.replace("\n", " ")  # Eliminar saltos de línea
+
+    print("\n🔎 TEXTO EXTRAÍDO POR VISION API:")
+    print(extracted_text)
+
+    fields = []
+    for label, value in labels.items():
+        if pd.isna(value) or not value:
+            continue
+
+        question = f"¿Cuál es {label.replace('_', ' ').lower()}?"
+        field_data = {"question": question, "answer": value, "box": []}
+
+        if label.lower() == "subtotal":
+            field_data["box"] = process_numeric_field_repeated(ocr_data, value)
+        elif label.lower() == "producto/servicio ofrecido":
+            field_data["box"] = process_specific_fields(extracted_text, ocr_data, label, value)
+        else:
+            word_boxes = process_generic_fields(extracted_text, ocr_data, label, value)
+            if word_boxes:
+                x_min = min(box[0] for box in word_boxes)
+                y_min = min(box[1] for box in word_boxes)
+                x_max = max(box[2] for box in word_boxes)
+                y_max = max(box[3] for box in word_boxes)
+
+                normalized_box = [
+                    int((x_min / ocr_data.pages[0].width) * 1000),
+                    int((y_min / ocr_data.pages[0].height) * 1000),
+                    int((x_max / ocr_data.pages[0].width) * 1000),
+                    int((y_max / ocr_data.pages[0].height) * 1000),
+                ]
+                field_data["box"] = normalized_box
+
+        fields.append(field_data)
+
+        if field_data["box"]:
+            print(f"📦 Campo agregado: {question} - {value} - {field_data['box']}")
+        else:
+            print(f"⚠️ Campo agregado sin bounding box: {question} - {value}")
+
+    return fields
+
+# 📦 Función para buscar campos y bounding boxes genéricos
 def process_generic_fields(extracted_text, ocr_data, label, value):
     ocr_texts = extracted_text.split()
     match = find_best_match(value, ocr_texts)
@@ -60,85 +186,6 @@ def process_generic_fields(extracted_text, ocr_data, label, value):
 
     return word_boxes
 
-# 🧾 Función específica para buscar frases completas
-def find_phrase_in_ocr(ocr_texts, phrase):
-    words = phrase.split()
-    matches = []
-
-    for i in range(len(ocr_texts) - len(words) + 1):
-        if all(normalize_text(word) in normalize_text(ocr_text) for word, ocr_text in zip(words, ocr_texts[i:])):
-            matches.append(" ".join(ocr_texts[i:i+len(words)]))
-
-    return matches
-
-# 📦 Función principal para procesar una factura
-def process_invoice(image_path, labels):
-    with open(image_path, "rb") as image_file:
-        content = image_file.read()
-
-    image = vision.Image(content=content)
-    response = client.text_detection(image=image)
-    ocr_data = response.full_text_annotation
-    extracted_text = ocr_data.text.replace("\n", " ")  # Eliminar saltos de línea
-    ocr_texts = extracted_text.split()
-
-    print("\n🔎 TEXTO EXTRAÍDO POR VISION API:")
-    print(extracted_text)
-
-    fields = []
-    for label, value in labels.items():
-        if pd.isna(value) or not value:
-            continue
-
-        # 🔍 Procesar campos de forma genérica
-        word_boxes = process_generic_fields(extracted_text, ocr_data, label, value)
-
-        # ✅ Búsqueda específica para "Honorarios servicios profesionales"
-        if label.lower() == "producto/servicio ofrecido":
-            matches = find_phrase_in_ocr(ocr_texts, value)
-            if matches:
-                print(f"✅ Coincidencia de frase encontrada: {matches}")
-                word_boxes = process_generic_fields(extracted_text, ocr_data, label, matches[0])
-
-        # ✅ Búsqueda específica para "Subtotal"
-        if label.lower() == "subtotal":
-            normalized_value = normalize_text(value).replace("$", "").replace(".", "").replace(",", "")
-            match = find_best_match(normalized_value, ocr_texts)
-            if match:
-                print(f"✅ Subtotal encontrado: {match}")
-                word_boxes = process_generic_fields(extracted_text, ocr_data, label, match)
-
-        # 📦 Combinar las bounding boxes de todas las palabras para formar un único box
-        if word_boxes:
-            x_min = min(box[0] for box in word_boxes)
-            y_min = min(box[1] for box in word_boxes)
-            x_max = max(box[2] for box in word_boxes)
-            y_max = max(box[3] for box in word_boxes)
-
-            normalized_box = [
-                int((x_min / ocr_data.pages[0].width) * 1000),
-                int((y_min / ocr_data.pages[0].height) * 1000),
-                int((x_max / ocr_data.pages[0].width) * 1000),
-                int((y_max / ocr_data.pages[0].height) * 1000),
-            ]
-        else:
-            normalized_box = []  # Si no encuentra box, se deja vacío
-
-        # ✅ Agregar la pregunta, respuesta y bounding box
-        question = f"¿Cuál es {label.replace('_', ' ').lower()}?"
-        fields.append({
-            "question": question,
-            "answer": value,
-            "box": normalized_box
-        })
-
-        if word_boxes:
-            print(f"📦 Campo agregado: {question} - {value} - {normalized_box}")
-        else:
-            print(f"⚠️ Campo agregado sin bounding box: {question} - {value}")
-
-    return fields
-
 # 🧾 Procesar todas las facturas y generar el dataset
 dataset = []
 for index, row in df.iterrows():
@@ -148,10 +195,7 @@ for index, row in df.iterrows():
 
     if os.path.exists(image_path):
         fields = process_invoice(image_path, labels)
-        dataset.append({
-            "file_name": file_name,
-            "fields": fields
-        })
+        dataset.append({"file_name": file_name, "fields": fields})
     break  # ✅ Procesar solo una factura
 
 # 💾 Guardar el dataset en formato JSON
