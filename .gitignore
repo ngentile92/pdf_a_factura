@@ -1,0 +1,56 @@
+# Ignorar credenciales sensibles
+key.json
+
+# Ignorar entornos virtuales
+venv/
+.venv/
+*/venv/
+
+# Ignorar archivos de caché de Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+
+# Ignorar carpetas de facturas
+facturas/
+*/facturas/
+
+# Ignorar archivos temporales
+*.tmp
+*.temp
+*.swp
+
+# Ignorar archivos de configuración de VSCode
+.vscode/
+.history/
+*.code-workspace
+
+# Ignorar archivos de entorno de desarrollo
+.env
+*.env
+venv/
+
+# ignorar carpeta trained_models
+trained_models/
+*/trained_models/
+#ignorar esto: transform/trained_model/
+transform/trained_model/
+transform/.DS_Store
+images/.DS_Store
+images/
+facturas/
+transform/results/
+
+# Ignorar resultados de entrenamientos
+transform/results/
+}# Ignorar archivos grandes
+*.pdf
+*.json
+*.pt
+*.jpg
+*.png
+pdf_web_app/uploads/
+facturas/
+transform/results/
