@@ -45,7 +45,7 @@ transform/results/
 
 # Ignorar resultados de entrenamientos
 transform/results/
-}# Ignorar archivos grandes
+# Ignorar archivos grandes
 *.pdf
 *.json
 *.pt
