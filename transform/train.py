@@ -20,13 +20,17 @@ for example in dataset:
         all_answers.add(field["answer"])
 
 # ✅ Split the dataset into train, validation, and test sets
-split_dataset = dataset.train_test_split(test_size=0.4, seed=42)
-validation_test_split = split_dataset["test"].train_test_split(test_size=0.5, seed=42)
+split_dataset = dataset.train_test_split(test_size=0.1, seed=42)
+validation_test_split = split_dataset["test"].train_test_split(test_size=0.2, seed=42)
 
+#print the sise of the dataset
+print(f"Train size: {len(split_dataset['train'])}")
+print(f"Validation size: {len(validation_test_split['train'])}")
+print(f"Test size: {len(validation_test_split['test'])}")
 final_dataset = DatasetDict({
     "train": split_dataset["train"],
     "validation": validation_test_split["train"],
-    "test": validation_test_split["test"],
+    "test": validation_test_split["train"],
 })
 
 # Crear el mapa de etiquetas
@@ -37,28 +41,40 @@ model = LayoutLMv3ForTokenClassification.from_pretrained("microsoft/layoutlmv3-b
 processor = LayoutLMv3Processor.from_pretrained("microsoft/layoutlmv3-base", apply_ocr=False)
 
 # 📦 ✅ Preprocessing function
+# 📦 ✅ Preprocessing function corregida
 def preprocess_data(example):
     image_path = os.path.join("../images", f"{example['file_name']}.png")
     image = Image.open(image_path).convert("RGB")
 
     questions = [field["question"] for field in example["fields"]]
     answers = [field["answer"] for field in example["fields"]]
-    boxes = [field["box"] for field in example["fields"]]
+
+    # ✅ Manejar bounding boxes vacíos o inválidos
+    boxes = []
+    for field in example["fields"]:
+        box = field.get("box", [0, 0, 0, 0])  # Rellenar si falta
+        if not box or len(box) != 4:
+            box = [0, 0, 0, 0]  # Usar box vacío si está incompleto
+        boxes.append(box)
+
+    # ✅ Asegurar que la longitud de boxes coincida con la longitud de las preguntas
+    while len(boxes) < len(questions):
+        boxes.append([0, 0, 0, 0])
+
+    boxes = boxes[:len(questions)]
 
     # ✅ Encode the image, questions, and bounding boxes
     encoded = processor(
         images=image,
         text=questions,
-        boxes=boxes,
+        boxes=boxes,  # ✅ Pasar los boxes aquí
         padding="max_length",
         truncation=True,
         return_tensors="pt"
     )
 
-    # ✅ Convert answers to token labels using the label_map
-    labels = torch.tensor([label_map[a] for a in answers], dtype=torch.long)
-
-    # ✅ Ensure labels match the number of tokens
+    # ✅ Convertir respuestas a etiquetas
+    labels = torch.tensor([label_map.get(a, -100) for a in answers], dtype=torch.long)
     labels = torch.nn.functional.pad(labels, (0, encoded["input_ids"].size(1) - labels.size(0)), value=-100)
 
     return {

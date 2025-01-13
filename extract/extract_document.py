@@ -28,8 +28,7 @@ def process_pdf(pdf_path):
     pages = convert_from_path(pdf_path, first_page=1, last_page=1, dpi=72)
     image_path = "temp_page_1.png"
     pages[0].save(image_path, "PNG")
-    #save image in ../images folder
-    pages[0].save(f"../images/{pdf_path.split('/')[-1].replace('.pdf', '.png')}", "PNG")
+    pages[0].save(f"../images/{os.path.basename(pdf_path).replace('.pdf', '.png')}", "PNG")
     response = process_image(image_path)
     os.remove(image_path)
     return response
@@ -51,19 +50,33 @@ def extract_text_and_bboxes(response):
 def label_data(text_data, values):
     """Etiqueta los datos extraídos basándose en los valores del CSV."""
     labeled_data = []
-    for item in text_data:
-        text = item["text"]
+    missing_data = []
 
-        # Comparar con los valores del CSV y asignar etiquetas
-        for label, value in values.items():
-            if text in str(value):
+    for label, value in values.items():
+        found = False
+        for item in text_data:
+            if value in item["text"]:
                 labeled_data.append({
-                    "text": text,
+                    "text": item["text"],
                     "bbox": item["bbox"],
                     "label": label
                 })
-    
-    return labeled_data
+                found = True
+                break
+        if not found:
+            missing_data.append({"field": label, "expected": value})
+
+    return labeled_data, missing_data
+
+def save_error_report(file_name, ocr_texts, missing_data):
+    """Guarda un reporte de errores con el OCR completo y los valores no encontrados."""
+    report = {
+        "file_name": file_name,
+        "ocr_texts": ocr_texts,
+        "missing_data": missing_data
+    }
+    with open(f"../error_reports/{file_name}_error_report.json", "w", encoding="utf-8") as f:
+        json.dump(report, f, indent=4, ensure_ascii=False)
 
 def main():
     output_data = []
@@ -78,13 +91,19 @@ def main():
             response = process_image(factura_file)
 
         text_data = extract_text_and_bboxes(response)
-        labeled_data = label_data(text_data, values)
+        labeled_data, missing_data = label_data(text_data, values)
 
         output_data.extend(labeled_data)
+
+        # Guardar reporte de errores si hay datos faltantes
+        if missing_data:
+            ocr_texts = [item["text"] for item in text_data]
+            save_error_report(row['factura'], ocr_texts, missing_data)
 
     # Guardar el dataset etiquetado
     with open("dataset.json", "w", encoding="utf-8") as f:
         json.dump(output_data, f, indent=4, ensure_ascii=False)
 
 if __name__ == "__main__":
+    os.makedirs("../error_reports", exist_ok=True)
     main()
