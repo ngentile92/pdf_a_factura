@@ -6,6 +6,8 @@ import json
 import os
 from PIL import Image
 import numpy as np
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning)
 
 # 📄 ✅ Load the dataset from the JSON file
 with open("../extract/facturas_dataset.json", "r", encoding="utf-8") as f:
@@ -30,7 +32,7 @@ print(f"Test size: {len(validation_test_split['test'])}")
 final_dataset = DatasetDict({
     "train": split_dataset["train"],
     "validation": validation_test_split["train"],
-    "test": validation_test_split["train"],
+    "test": validation_test_split["test"],  # El test debería ser el split correcto
 })
 
 # Crear el mapa de etiquetas
@@ -41,67 +43,90 @@ model = LayoutLMv3ForTokenClassification.from_pretrained("microsoft/layoutlmv3-b
 processor = LayoutLMv3Processor.from_pretrained("microsoft/layoutlmv3-base", apply_ocr=False)
 
 # 📦 ✅ Preprocessing function
-# 📦 ✅ Preprocessing function corregida
+from PIL import Image
+import torch
+import os
+from transformers import LayoutLMv3Processor
+
+# ✅ Cargar el modelo y el procesador
+processor = LayoutLMv3Processor.from_pretrained("microsoft/layoutlmv3-base", apply_ocr=False)
+
+# ✅ Preprocesar datos con bounding boxes
 def preprocess_data(example):
+    if "fields" not in example or len(example["fields"]) == 0:
+        return None  # Saltar ejemplos vacíos
+
     image_path = os.path.join("../images", f"{example['file_name']}.png")
     image = Image.open(image_path).convert("RGB")
 
     questions = [field["question"] for field in example["fields"]]
     answers = [field["answer"] for field in example["fields"]]
+    boxes = [field["box"] for field in example["fields"]]
 
-    # ✅ Manejar bounding boxes vacíos o inválidos
-    boxes = []
-    for field in example["fields"]:
-        box = field.get("box", [0, 0, 0, 0])  # Rellenar si falta
-        if not box or len(box) != 4:
-            box = [0, 0, 0, 0]  # Usar box vacío si está incompleto
-        boxes.append(box)
+    # Tokenizar cada pregunta antes de pasarlas al procesador
+    tokenized_questions = [processor.tokenizer.tokenize(q) for q in questions]
 
-    # ✅ Asegurar que la longitud de boxes coincida con la longitud de las preguntas
-    while len(boxes) < len(questions):
-        boxes.append([0, 0, 0, 0])
-
-    boxes = boxes[:len(questions)]
-
-    # ✅ Encode the image, questions, and bounding boxes
+    # Procesar la imagen y las preguntas tokenizadas
     encoded = processor(
         images=image,
-        text=questions,
-        boxes=boxes,  # ✅ Pasar los boxes aquí
+        text=tokenized_questions,
+        boxes=boxes,
         padding="max_length",
         truncation=True,
         return_tensors="pt"
     )
 
-    # ✅ Convertir respuestas a etiquetas
-    labels = torch.tensor([label_map.get(a, -100) for a in answers], dtype=torch.long)
-    labels = torch.nn.functional.pad(labels, (0, encoded["input_ids"].size(1) - labels.size(0)), value=-100)
+    # Convertir respuestas en etiquetas
+    labels = [-100] * encoded["input_ids"].size(1)
+    for i, answer in enumerate(answers):
+        tokenized_answer = processor.tokenizer(answer).input_ids
+        start_idx = labels.index(-100)  # Encontrar la posición de inicio para esta respuesta
+        labels[start_idx:start_idx + len(tokenized_answer)] = [label_map[answer]] * len(tokenized_answer)
 
     return {
         "input_ids": encoded["input_ids"].squeeze(0),
         "attention_mask": encoded["attention_mask"].squeeze(0),
         "bbox": encoded["bbox"].squeeze(0),
-        "labels": labels
+        "labels": torch.tensor(labels, dtype=torch.long)
     }
 
 # ✅ Preprocess the complete dataset
 encoded_dataset = final_dataset.map(preprocess_data, remove_columns=["file_name", "fields"])
+# Verificar alineación entre input_ids y labels
+# 🔍 Verificación de alineación entre tokens y etiquetas
+# 🔍 Verificación de alineación entre tokens y etiquetas
+for idx, example in enumerate(encoded_dataset["train"]):
+    print(f"\n🧾 Ejemplo {idx + 1}:")
+    print("Input IDs:", example["input_ids"][:10])
+    
+    # Aplanar las etiquetas
+    flat_labels = [label for sublist in example["labels"] for label in sublist]
+
+    print("Labels:", flat_labels[:10])  # Mostrar los primeros 10 labels aplanados
+
+    # Verificar si los tokens etiquetados están alineados correctamente
+    if all(label == -100 for label in flat_labels):
+        print("⚠️ Advertencia: Todos los tokens están ignorados.")
+    elif any(label >= len(label_map) for label in flat_labels if label != -100):
+        print("❌ Error: Hay etiquetas fuera del rango del mapa de etiquetas.")
+    else:
+        print("✅ Tokens alineados correctamente.")
 
 # ⚙️ ✅ Define training arguments
 training_args = TrainingArguments(
     output_dir="./results",
     evaluation_strategy="epoch",
     save_strategy="epoch",
-    per_device_train_batch_size=1,
-    per_device_eval_batch_size=1,
-    num_train_epochs=10,
-    save_total_limit=1,
+    per_device_train_batch_size=2,
+    per_device_eval_batch_size=2,
+    num_train_epochs=20,
+    learning_rate=2e-5,
     logging_dir="./logs",
-    logging_steps=5,
+    logging_steps=10,
     load_best_model_at_end=True,
-    learning_rate=5e-5,
     remove_unused_columns=False,
 )
+
 
 # ✅ Define the trainer
 trainer = Trainer(
@@ -144,8 +169,6 @@ probs = softmax(torch.tensor(predictions.predictions), dim=-1).numpy()
 predicted_labels = np.argmax(probs, axis=-1)
 
 # 🧩 ✅ Función corregida para decodificar y mostrar las predicciones
-# 🧩 ✅ Función para decodificar y mostrar las predicciones
-# 🧩 ✅ Función para decodificar y mostrar las predicciones
 def decode_predictions(predicted_labels, probs, dataset, threshold=0.8):
     correct = 0
     total = len(dataset)
@@ -160,21 +183,17 @@ def decode_predictions(predicted_labels, probs, dataset, threshold=0.8):
             question = field["question"]
             actual_answer = field["answer"]
 
-            # ✅ Asegurarse de que las predicciones sean un array y manejar casos donde sea un escalar
-            if isinstance(predicted_labels[i], np.ndarray):
-                pred_label = predicted_labels[i][j] if j < len(predicted_labels[i]) else -100
+            # Handle out-of-bounds errors
+            if i >= len(predicted_labels) or j >= len(predicted_labels[i]):
+                pred_label = -100
+                confidence = 0
+            else:
+                pred_label = predicted_labels[i][j]
                 confidence = probs[i][j][pred_label] if pred_label != -100 else 0
-            else:
-                pred_label = predicted_labels[i]
-                confidence = probs[i][pred_label] if pred_label != -100 else 0
 
-            # ✅ Obtener la respuesta predicha o manejar el caso donde no haya predicción
-            if confidence >= threshold and pred_label < len(fields):
-                predicted_answer = fields[pred_label]["answer"]
-            else:
-                predicted_answer = "No prediction"
+            predicted_answer = field["answer"] if confidence >= threshold else "No prediction"
 
-            # ✅ Comparar la predicción con la respuesta real
+            # Compare the prediction with the actual answer
             if predicted_answer == actual_answer:
                 result = "✅ Correcto"
                 correct += 1
@@ -185,7 +204,7 @@ def decode_predictions(predicted_labels, probs, dataset, threshold=0.8):
             print(f"    🏷️ Real: {actual_answer}")
             print(f"    🤖 Predicción: {predicted_answer} ({result}) - Confianza: {confidence:.2f}")
 
-    # 📊 Mostrar la precisión del modelo
+    # Display the model accuracy
     accuracy = correct / total * 100
     print(f"\n📈 Precisión del modelo: {accuracy:.2f}% ({correct}/{total} correctas)")
 

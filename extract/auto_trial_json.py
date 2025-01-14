@@ -82,53 +82,80 @@ def process_generic_fields(extracted_text, ocr_data, label, value):
 
     word_boxes = []
     if match:
+        match_words = match.split()
+        current_word_index = 0
+
         for page in ocr_data.pages:
             for block in page.blocks:
                 for paragraph in block.paragraphs:
                     for word in paragraph.words:
+                        if current_word_index >= len(match_words):
+                            break  # ✅ Detener si ya procesamos todas las palabras
+
                         word_text = normalize_text("".join([symbol.text for symbol in word.symbols]))
-                        if word_text in normalize_text(match):
-                            x_min = min(vertex.x for vertex in word.bounding_box.vertices)
-                            y_min = min(vertex.y for vertex in word.bounding_box.vertices)
-                            x_max = max(vertex.x for vertex in word.bounding_box.vertices)
-                            y_max = max(vertex.y for vertex in word.bounding_box.vertices)
-                            word_boxes.append([x_min, y_min, x_max, y_max])
+                        if normalize_text(word_text) == normalize_text(match_words[current_word_index]):
+                            bounding_box = word.bounding_box
+                            box_coords = (
+                                min(vertex.x for vertex in bounding_box.vertices),
+                                min(vertex.y for vertex in bounding_box.vertices),
+                                max(vertex.x for vertex in bounding_box.vertices),
+                                max(vertex.y for vertex in bounding_box.vertices)
+                            )
+                            print(f"🔎 Bounding box capturado: {word_text} - {box_coords}")
+                            word_boxes.append(box_coords)
+                            current_word_index += 1
 
-    # 🛠️ Combinar bounding boxes en uno solo
-    if word_boxes:
-        combined_box = combine_bounding_boxes(word_boxes)
-        return combined_box
+                            # ✅ Si hemos capturado todas las palabras, detener
+                            if current_word_index == len(match_words):
+                                break
 
-    return []
-
-# 📦 Función para procesar campos específicos como frases completas
-def process_specific_fields(extracted_text, ocr_data, label, value):
-    ocr_texts = extracted_text.split()
-    matches = find_phrase_in_ocr(ocr_texts, value)
-
-    word_boxes = []
-    if matches:
-        for match in matches:
+    # ✅ Lógica adicional si no se encontraron bounding boxes
+    if not word_boxes:
+        print(f"⚠️ No se encontraron bounding boxes para '{value}', buscando palabra por palabra...")
+        for target_word in target_words:
             for page in ocr_data.pages:
                 for block in page.blocks:
                     for paragraph in block.paragraphs:
                         for word in paragraph.words:
                             word_text = normalize_text("".join([symbol.text for symbol in word.symbols]))
-                            if normalize_text(word_text) in normalize_text(match):
-                                x_min = min(vertex.x for vertex in word.bounding_box.vertices)
-                                y_min = min(vertex.y for vertex in word.bounding_box.vertices)
-                                x_max = max(vertex.x for vertex in word.bounding_box.vertices)
-                                y_max = max(vertex.y for vertex in word.bounding_box.vertices)
-                                word_boxes.append([x_min, y_min, x_max, y_max])
+                            if normalize_text(word_text) == normalize_text(target_word):
+                                bounding_box = word.bounding_box
+                                box_coords = (
+                                    min(vertex.x for vertex in bounding_box.vertices),
+                                    min(vertex.y for vertex in bounding_box.vertices),
+                                    max(vertex.x for vertex in bounding_box.vertices),
+                                    max(vertex.y for vertex in bounding_box.vertices)
+                                )
+                                print(f"🔎 Bounding box capturado: {target_word} - {box_coords}")
+                                word_boxes.append(box_coords)
 
+    # 🛠️ Combinar los bounding boxes de las palabras consecutivas
     if word_boxes:
-        x_min = min(box[0] for box in word_boxes)
-        y_min = min(box[1] for box in word_boxes)
-        x_max = max(box[2] for box in word_boxes)
-        y_max = max(box[3] for box in word_boxes)
-        return [x_min, y_min, x_max, y_max]
+        combined_box = combine_bounding_boxes(word_boxes)
+        print(f"🔧 Bounding box combinado devuelto: {combined_box}")
+        return combined_box
 
+    print("⚠️ No se encontró bounding box para el campo")
     return []
+
+
+# 🛠️ Función para combinar bounding boxes consecutivos
+def combine_bounding_boxes(boxes):
+    if not boxes:
+        return []
+
+    # Ordenar los boxes por la coordenada x_min
+    boxes.sort(key=lambda box: box[0])
+
+    # Combinar los bounding boxes consecutivos
+    x_min = min(box[0] for box in boxes)
+    y_min = min(box[1] for box in boxes)
+    x_max = max(box[2] for box in boxes)
+    y_max = max(box[3] for box in boxes)
+
+    return [x_min, y_min, x_max, y_max]
+
+
 
 # 📦 Función para buscar frases completas en el texto OCR
 def find_phrase_in_ocr(ocr_texts, phrase):
@@ -146,7 +173,6 @@ def format_invoice_number(number):
     number = str(number).strip()
     return f"{'0' * (8 - len(number))}{number}"
 
-# 📦 Función principal para procesar una factura
 # 📦 Función principal para procesar una factura
 def process_invoice(image_path, labels):
     with open(image_path, "rb") as image_file:
@@ -172,9 +198,10 @@ def process_invoice(image_path, labels):
 
         # Procesar según el tipo de campo
         if label.lower() == "comprobante nro":
-            # check the lenght of the number
             value = format_invoice_number(value)
             field_data["box"] = process_generic_fields(extracted_text, ocr_data, label, value)
+        elif label.lower() == "subtotal":
+            field_data["box"] = process_numeric_field_repeated(ocr_data, value)
         else:
             field_data["box"] = process_generic_fields(extracted_text, ocr_data, label, value)
 
@@ -192,67 +219,61 @@ def process_invoice(image_path, labels):
 def process_numeric_field_repeated(ocr_data, target_value):
     if "$" in target_value:
         target_value = target_value.replace("$", "").strip()
+    if "USD" in target_value:
+        target_value = target_value.replace("USD", "").strip()
+        # change . to , and , to .
+        target_value = target_value.replace(",", "temp").replace(".", ",").replace("temp", ".")
 
     # Crear diferentes variantes del formato
-    variants = []
-    
-    # Formato original
-    variants.append(target_value)
-    
+    variants = [target_value]
+
     # Formato sin punto
-    no_dots = target_value.replace(".", "")
-    variants.append(no_dots)
-    
+    variants.append(target_value.replace(".", ""))
+
     # Formato sin coma
     if "," in target_value:
-        no_comma = target_value.replace(",", "")
-        variants.append(no_comma)
+        variants.append(target_value.replace(",", ""))
 
-    # Agregar el formato original de búsqueda de componentes
+    # Variantes adicionales para números fraccionarios
     components = re.findall(r"\d{1,3}(?:\.\d{3})*,\d{2}", target_value)
     variants.extend(components)
 
     print(f"🔎 Buscando variantes del número: {variants}")
 
     found_boxes = []
+    matched_texts = set()
+
     for page in ocr_data.pages:
         for block in page.blocks:
             for paragraph in block.paragraphs:
                 for word in paragraph.words:
-                    word_text = "".join([symbol.text for symbol in word.symbols])
-                    word_text = word_text.replace("$", "").strip()
-                    
-                    # Verificar todas las variantes
-                    for variant in variants:
-                        if variant in word_text or word_text in variant:
-                            bounding_box = word.bounding_box
-                            x_min = min(vertex.x for vertex in bounding_box.vertices)
-                            y_min = min(vertex.y for vertex in bounding_box.vertices)
-                            x_max = max(vertex.x for vertex in bounding_box.vertices)
-                            y_max = max(vertex.y for vertex in bounding_box.vertices)
-                            found_boxes.append([x_min, y_min, x_max, y_max])
+                    word_text = "".join([symbol.text for symbol in word.symbols]).replace("$", "").strip()
 
+                    for variant in variants:
+                        # Buscar coincidencia exacta o parcial
+                        if variant in word_text and word_text not in matched_texts:
+                            matched_texts.add(word_text)
+
+                            # Extraer bounding box del número encontrado
+                            bounding_box = word.bounding_box
+                            box_coords = (
+                                min(vertex.x for vertex in bounding_box.vertices),
+                                min(vertex.y for vertex in bounding_box.vertices),
+                                max(vertex.x for vertex in bounding_box.vertices),
+                                max(vertex.y for vertex in bounding_box.vertices),
+                            )
+                            print(f"🔎 Bounding box capturado: {word_text} - {box_coords}")
+                            found_boxes.append(box_coords)
+
+    # 🛠️ Combinar bounding boxes si son adyacentes
     if found_boxes:
-        # Combinar todos los boxes encontrados
-        x_min = min(box[0] for box in found_boxes)
-        y_min = min(box[1] for box in found_boxes)
-        x_max = max(box[2] for box in found_boxes)
-        y_max = max(box[3] for box in found_boxes)
-        return [x_min, y_min, x_max, y_max]
+        combined_box = combine_bounding_boxes(found_boxes)
+        print(f"🔧 Bounding box combinado devuelto: {combined_box}")
+        return combined_box
 
     print(f"⚠️ No se encontraron bounding boxes para los componentes de: {target_value}")
     return []
-# Combinar múltiples bounding boxes en uno solo
-def combine_bounding_boxes(boxes):
-    if not boxes:
-        return []
 
-    x_min = min(box[0] for box in boxes)
-    y_min = min(box[1] for box in boxes)
-    x_max = max(box[2] for box in boxes)
-    y_max = max(box[3] for box in boxes)
-
-    return [x_min, y_min, x_max, y_max]
 # Función para detectar errores entre los textos extraídos y los valores esperados
 def detect_errors(file_name, extracted_texts, expected_values):
     errors = []
@@ -287,3 +308,6 @@ with open(output_file, "w", encoding='utf-8') as f:
     json.dump(dataset, f, indent=4, ensure_ascii=False)
 
 print(f"✅ Dataset generado: {output_file}")
+
+
+
